@@ -5,13 +5,7 @@ from rapidfuzz import fuzz
 from openpyxl.styles import PatternFill
 from io import BytesIO
 
-# إعدادات الصفحة
-st.set_page_config(page_title="المطابق الذكي الديناميكي", layout="wide")
-
-st.title("🔄 نظام المطابقة المرن")
-st.info("ارفع الملفات، اختر الأعمدة، واترك الباقي على النظام.")
-
-# --- دوال المعالجة ---
+# --- نفس الدوال الأساسية بدقة 100% ---
 def normalize_name(name):
     if pd.isnull(name): return ""
     name = str(name).strip()
@@ -25,109 +19,100 @@ def get_first_three_words(name):
     words = str(name).split()
     return " ".join(words[:3]) if len(words) >= 3 else " ".join(words)
 
-# --- رفع الملفات ---
+# --- واجهة المستخدم ---
+st.title("🔄 نظام المطابقة الذكي الديناميكي")
+
 col1, col2 = st.columns(2)
 with col1:
-    file_a = st.file_uploader("رفع ملف (أ) - الملف المطلوب تعبئته", type=['xlsx'])
+    file_target = st.file_uploader("رفع الملف المطلوب تعبئته (مثلاً: العقاري)", type=['xlsx'])
 with col2:
-    file_b = st.file_uploader("رفع ملف (ب) - ملف المصدر (بصرة مثلاً)", type=['xlsx'])
+    file_source = st.file_uploader("رفع ملف المصدر (مثلاً: بصره)", type=['xlsx'])
 
-if file_a and file_b:
-    df_a = pd.read_excel(file_a)
-    df_b = pd.read_excel(file_b)
+if file_target and file_source:
+    df_target = pd.read_excel(file_target)
+    df_source = pd.read_excel(file_source)
 
-    st.divider()
+    st.sidebar.header("⚙️ إعدادات الأعمدة")
     
-    # --- اختيار الأعمدة ديناميكياً ---
-    st.subheader("⚙️ إعدادات المطابقة")
-    c1, c2, c3 = st.columns(3)
+    # اختيار الأعمدة من ملف الهدف (العقاري)
+    name_col_t = st.sidebar.selectbox("عمود الاسم (الهدف)", df_target.columns)
+    school_col_t = st.sidebar.selectbox("عمود المدرسة/القسم (الهدف)", df_target.columns)
     
-    with c1:
-        name_col_a = st.selectbox("عمود الاسم في ملف (أ)", df_a.columns)
-        school_col_a = st.selectbox("عمود المدرسة/القسم في ملف (أ)", df_a.columns)
+    # اختيار الأعمدة من ملف المصدر (بصره)
+    name_col_s = st.sidebar.selectbox("عمود الاسم (المصدر)", df_source.columns)
+    school_col_s = st.sidebar.selectbox("عمود المدرسة/القسم (المصدر)", df_source.columns)
     
-    with c2:
-        name_col_b = st.selectbox("عمود الاسم في ملف (ب)", df_b.columns)
-        school_col_b = st.selectbox("عمود المدرسة/القسم في ملف (ب)", df_b.columns)
-    
-    with c3:
-        target_cols_b = st.multiselect("الأعمدة المراد جلبها من ملف (ب)", [c for c in df_b.columns if c != name_col_b])
+    # اختيار الأعمدة المراد جلبها ديناميكياً
+    fetch_cols = st.sidebar.multiselect("الأعمدة المراد جلبها عند التطابق (مثلاً: Iban)", df_source.columns)
 
-    if st.button("🚀 بدء المطابقة الذكية"):
-        with st.spinner("جاري تحليل البيانات..."):
-            # تجهيز البيانات
-            df_b["_norm_name"] = df_b[name_col_b].apply(normalize_name)
-            df_b["_three_word"] = df_b["_norm_name"].apply(get_first_three_words)
-            df_b["_norm_school"] = df_b[school_col_b].apply(normalize_name)
+    if st.button("🚀 بدء المطابقة"):
+        # 1. تحضير ملف المصدر (Normalization)
+        df_source["_norm_name"] = df_source[name_col_s].apply(normalize_name)
+        df_source["_three_word"] = df_source["_norm_name"].apply(get_first_three_words)
+        df_source["_norm_school"] = df_source[school_col_s].apply(normalize_name)
 
-            results = []
-
-            for _, row_a in df_a.iterrows():
-                name_a = normalize_name(row_a[name_col_a])
-                three_a = get_first_three_words(name_a)
-                school_a = normalize_name(row_a[school_col_a])
-                
-                # البحث الأولي بالأسماء الثلاثية
-                candidates = df_b[df_b["_three_word"] == three_a]
-                
-                match_found = False
-                best_row_b = None
-                best_score = 0
-                
-                if not candidates.empty:
-                    for _, row_b in candidates.iterrows():
-                        score = fuzz.ratio(school_a, row_b["_norm_school"])
-                        if score > best_score:
-                            best_score = score
-                            best_row_b = row_b
-                    
-                    if best_score >= 85 or school_a in best_row_b["_norm_school"] or best_row_b["_norm_school"] in school_a:
-                        note = "✅ تطابق تام"
-                        match_found = True
-                    else:
-                        note = "⚠️ الاسم مطابق - المدرسة مختلفة"
-                else:
-                    note = "❌ لا يوجد تطابق"
-
-                # بناء السجل الناتج
-                res_row = row_a.to_dict()
-                res_row["الملاحظة"] = note
-                res_row["نسبة تشابه المدرسة"] = f"{round(best_score)}%"
-                
-                for col in target_cols_b:
-                    res_row[f"جلب_{col}"] = best_row_b[col] if (match_found and best_row_b is not None) else ""
-                
-                results.append(res_row)
-
-            result_df = pd.DataFrame(results)
-
-            # --- التصدير والتلوين ---
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                result_df.to_excel(writer, index=False, sheet_name="النتائج")
-                ws = writer.sheets["النتائج"]
-                
-                # تعريف الألوان
-                fills = {
-                    "✅": PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),
-                    "⚠️": PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
-                    "❌": PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                }
-
-                # البحث عن عمود الملاحظة للتلوين
-                note_idx = result_df.columns.get_loc("الملاحظة") + 1
-                for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                    note_val = str(row[note_idx-1].value)
-                    for char, fill in fills.items():
-                        if char in note_val:
-                            for cell in row: cell.fill = fill
-
-            st.success("اكتملت المطابقة!")
-            st.dataframe(result_df.head(100)) # عرض عينة
+        matches = []
+        
+        # 2. حلقة المطابقة (نفس المنطق الأصلي)
+        for _, row_t in df_target.iterrows():
+            target_name_norm = normalize_name(row_t[name_col_t])
+            target_three = get_first_three_words(target_name_norm)
+            target_school_norm = normalize_name(row_t[school_col_t])
             
-            st.download_button(
-                label="📥 تحميل النتائج (Excel ملون)",
-                data=output.getvalue(),
-                file_name="Dynamic_Match_Results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            # البحث عن المرشحين بناءً على أول 3 كلمات
+            candidates = df_source[df_source["_three_word"] == target_three]
+
+            if len(candidates) == 0:
+                res = row_t.to_dict()
+                res.update({"الملاحظة": "❌ لا يوجد اسم مطابق", "نسبة تطابق المدرسة": ""})
+                for c in fetch_cols: res[c] = ""
+                matches.append(res)
+                continue
+
+            best_score, best_row = 0, None
+            for _, row_s in candidates.iterrows():
+                sc = fuzz.ratio(target_school_norm, row_s["_norm_school"])
+                if sc > best_score:
+                    best_score, best_row = sc, row_s
+
+            school_ok = (best_score >= 85 or target_school_norm in best_row["_norm_school"] or best_row["_norm_school"] in target_school_norm)
+            note = "✅ اسم + مدرسة" if school_ok else "⚠️ اسم فقط — مدرسة مختلفة"
+            
+            res = row_t.to_dict()
+            res.update({
+                "الاسم المطابق (ملف المصدر)": best_row[name_col_s],
+                "القسم (ملف المصدر)": best_row[school_col_s],
+                "نسبة تطابق المدرسة": f"{round(best_score)}%",
+                "الملاحظة": note
+            })
+            
+            # جلب الأعمدة المختارة ديناميكياً
+            for c in fetch_cols:
+                res[c] = best_row[c] if school_ok else ""
+            
+            matches.append(res)
+
+        result_df = pd.DataFrame(matches)
+
+        # 3. التصدير الملون (نفس التنسيق الأصلي)
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            result_df.to_excel(writer, index=False, sheet_name="نتائج المطابقة")
+            ws = writer.sheets["نتائج المطابقة"]
+
+            green_fill  = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+            yellow_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+            red_fill    = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+            # تلوين الصفوف بناءً على عمود "الملاحظة"
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                val = str(row[result_df.columns.get_loc("الملاحظة")].value)
+                if "✅" in val:
+                    for cell in row: cell.fill = green_fill
+                elif "⚠️" in val:
+                    for cell in row: cell.fill = yellow_fill
+                elif "❌" in val:
+                    for cell in row: cell.fill = red_fill
+
+        st.success("تمت المطابقة بنجاح!")
+        st.download_button("📥 تحميل ملف النتائج الملون", output.getvalue(), "Matched_Results.xlsx")
